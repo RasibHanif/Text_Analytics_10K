@@ -1,0 +1,160 @@
+## Tokenization
+
+### Unigram
+
+```{r warning=FALSE, message=FALSE}
+#Token data
+token <- management_discussion_all %>%
+    unnest_tokens(word, mgmt_discuss) %>%
+    mutate(word = textstem::lemmatize_words(word))
+
+#Unnest for year
+discussion_words_comp_year <-  token %>%
+    anti_join(stop_words) %>%
+    anti_join(custom_stop_words) %>%
+    group_by(year, word) %>%
+    summarise(n = n()) %>%
+    bind_tf_idf(word, year, n) %>% 
+    mutate(length = nchar(word)) %>%
+    filter(length >3) #Removing character less than
+
+#Visualise most frequent words by each company
+discussion_words_comp_year %>% 
+  group_by(year) %>%
+  arrange(desc(tf_idf, year)) %>%
+  slice(1:4) %>%
+  ggplot(aes(tf_idf, word)) + geom_bar(stat= "identity", fill = "lightblue", color= "black") +   facet_wrap(~year, scale = "free_y") + labs(title = "Top words of each Year", x = "Frequency", y = "Words")
+
+#Unnest for company symbol and category
+discussion_words_comp_cat <-  token %>%
+    anti_join(stop_words) %>%
+    anti_join(custom_stop_words) %>%
+    group_by(symbol, gics_sub_industry, word) %>%
+    summarise(n = n()) %>%
+    bind_tf_idf(word, symbol, n)%>% 
+    mutate(length = nchar(word)) %>%
+    filter(length >3)
+
+#Visualise most frequent words by each company
+discussion_words_comp_cat %>% 
+  group_by(symbol) %>%
+  arrange(desc(tf_idf, gics_sub_industry)) %>%
+  slice(1:3) %>%
+  ggplot(aes(tf_idf, reorder(word,tf_idf))) + geom_bar(stat= "identity", fill = "lightblue", color= "black") +   facet_wrap(~symbol, scale = "free_y") + labs(title = "Top words of each Company", x = "Frequency", y = "Words")
+
+#Creating stop words of zero id_idf words
+discussion_words_comp_cat_a <- discussion_words_comp_cat %>%
+  ungroup() %>%
+  filter(tf_idf == 0) %>%
+  pull(word) %>%
+  data.frame() %>%
+  unique()
+
+colnames(discussion_words_comp_cat_a) <- "word"
+
+custom_stop_words <- unique(bind_rows(custom_stop_words, discussion_words_comp_cat_a))
+
+#Unnest for each cik
+#This is done to find stop words
+#Only those words which are used my one cik only
+#To remove biasness on whole industry analysis
+discussion_words_company <- token %>%
+    anti_join(stop_words) %>%
+    anti_join(custom_stop_words) %>%
+    count(cik, word, sort = TRUE) %>%
+    bind_tf_idf(word, cik, n) 
+
+ #Adding words to stop words which are only found in one company
+top_company_words <- discussion_words_company %>% 
+  group_by(word) %>%
+  summarise(count = n()) %>%
+  filter(count == 1) %>%
+  select(word)
+
+custom_stop_words <- unique(bind_rows(custom_stop_words, top_company_words))
+```
+
+```{r warning=FALSE, message=FALSE}
+#Unnest on GICS category
+discussion_words <- token %>%
+    anti_join(stop_words) %>%
+    anti_join(custom_stop_words) %>%
+    count(gics_sub_industry, word, sort = TRUE) %>%
+    bind_tf_idf(word, gics_sub_industry, n) %>%
+    mutate(length = nchar(word)) %>%
+    filter(length >3) #Removing character less than 
+
+#Visualise top 10 words
+discussion_words %>%
+  group_by(gics_sub_industry) %>%
+  arrange(desc(tf_idf)) %>%
+  slice(1:10) %>%
+  ggplot(aes(tf_idf, reorder(word,tf_idf))) + geom_bar(stat= "identity", fill = "lightblue", color = "black") +   facet_wrap(~gics_sub_industry, scale = "free_y", ncol =1) + labs(title = "Top words of each Category", x = "Frequency", y = "words")
+
+```
+
+```{r warning=FALSE, message=FALSE}
+#Adding words to stop words
+#Those which are majorly influenced my one company
+tibble(word = c("middleware", "iaas", "fluent", "solaris", "mile", "heartland", "spain", "semiconductor", "willingness", "budgetary", "functionally")) %>% bind_rows(custom_stop_words) -> custom_stop_words
+
+#Unnest again and remove these words and calculate tf_idf
+discussion_words_v1 <- token %>%
+    anti_join(stop_words) %>%
+    anti_join(custom_stop_words) %>%
+    count(gics_sub_industry, word, sort = TRUE) %>%
+    bind_tf_idf(word, gics_sub_industry, n) %>%
+    mutate(length = nchar(word)) %>% 
+    filter(length > 3)
+
+#Visualise top 10 industry words
+discussion_words_v1 %>%
+  group_by(gics_sub_industry) %>%
+  arrange(desc(tf_idf)) %>%
+  slice(1:10) %>%
+  ggplot(aes(tf_idf, reorder(word,tf_idf))) + geom_bar(stat= "identity", fill = "lightblue", color = "black") +   facet_wrap(~gics_sub_industry, scale = "free_y", ncol =1) + labs(title = "Top words of each Category", x = "Frequency", y = "words")
+```
+
+### Bigram
+
+```{r warning=FALSE, message=FALSE, fig.height=6, fig.width=6}
+tibble(word = c("fiscal", "june", "management", "discussion", "million", "sale", "net", "shares", "cash", "stock","income","earnings","liabilities","finance","expense","cost","sale","tax","total","debt","amount","company","statement","rate","relate","share","note","change","report","consolidate","revenue","revenues","marker","service","liability","operation","information","capital","product","period","utilities","information","technology","financials","assets","period","operations","related","prior","statements","gross","industry","based","primarily","results","expenses","costs", "profit", "ebitda", "support", "january", "billion", "flow", "dollar", "balance", "sheet", "table", "december", "september", "compensation", "asset", "loan", "card", "label", "overhead", "thousand", "actual", "description", "percent", "reward", "credit", "client", "class", "consumer", "hardware", "due")) %>% bind_rows(custom_stop_words) -> custom_stop_words
+
+discussion_clean <- token %>%
+    anti_join(stop_words) %>%
+    anti_join(custom_stop_words)
+
+discussion_clean <- discussion_clean %>%
+  select(cik, company.name, symbol, accession_no, gics_sub_industry, word)
+
+discussion_clean <- discussion_clean %>% group_by(cik) %>%
+   summarise(discussion = paste(word, collapse=" "))
+    
+category <- company_filing %>% select(cik, gics_sub_industry)
+
+
+bigram_discussion  <- discussion_clean %>%
+  unnest_tokens(word, discussion,token = "ngrams",n=2) %>%
+  count(cik, word, sort = TRUE) %>%
+  bind_tf_idf(word, cik, n) 
+
+bigram_discussion <- bigram_discussion %>%
+  left_join(category) %>%
+  unique()
+
+bigram_discussion %>%
+  group_by(gics_sub_industry) %>%
+  top_n(10, tf_idf) %>%
+  ggplot(aes(tf_idf, reorder(word,tf_idf))) + geom_bar(stat= "identity", fill = "lightblue", color = "black") +   facet_wrap(~gics_sub_industry, scale = "free_y", ncol =1) + labs(title = "Top words of each Category", x = "Frequency", y = "words")
+
+top <- bigram_discussion %>%
+ group_by(gics_sub_industry) %>%
+ top_n(5, tf_idf) %>%
+ select(word, gics_sub_industry) %>%
+ igraph::graph_from_data_frame()
+ ggraph(top, layout = "fr") +
+ geom_edge_link() +
+ geom_node_point() +
+ geom_node_text(aes(label = name), vjust = 1, hjust = 1)
+plot(top)
+```
