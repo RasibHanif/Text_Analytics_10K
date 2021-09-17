@@ -1,0 +1,96 @@
+## Loughran Stop-Words
+
+```{r warning=FALSE, message=FALSE}
+#Creating stop words from Loughrans dictionary
+stop_words <- data.frame()
+for(file in list.files("Stop_words/")){
+  word <- readLines(paste0("Stop_words/", file), warn=FALSE)
+  stop <- data.frame(word = word)
+  stop_words <- bind_rows(stop_words, stop)
+}
+
+stop_words <- separate(stop_words, word, c("word", "reject"))
+
+stop_words$reject <- NULL
+
+stop_words$word <- trimws(tolower(stop_words$word))
+```
+
+## Creating Custom Stop Words
+
+```{r stop_words, warning=FALSE, message=FALSE}
+#Creating custom stop words of company name
+company_filing$company.name <- as.character(company_filing$company.name)
+company_filing %>%
+  mutate(company.name = tolower(company.name)) %>%
+  unnest_tokens(word,company.name) %>%
+  select(word) %>%
+  data.frame() %>%
+  unique -> custom_stop_words
+
+#Adding company symbols
+company_filing %>% pull(symbol) %>% unique() %>% tolower() %>% data.frame() -> symbols
+
+colnames(symbols) <- "word"
+
+custom_stop_words <- custom_stop_words %>% 
+  bind_rows(symbols)
+
+company_filing %>%
+  mutate(gics_sub_industry = tolower(gics_sub_industry)) %>%
+  unnest_tokens(word,gics_sub_industry) %>%
+  select(word) %>%
+  unique() %>%
+  bind_rows(custom_stop_words) -> custom_stop_words
+```
+
+We have to clean the management discussion for this we are going to lower all the words because text analytics is case sensitive. We also remove numbers, punctuation and white spaces as they will cause issues in analysis.
+
+```{r create_cleaning_function, warning=FALSE, message=FALSE}
+#Creating function to clean management discussions
+clean.text <- function(x, lowercase=TRUE, numbers=TRUE, punctuation=TRUE, spaces=TRUE, whitespace=TRUE)
+{
+ # x: character string
+ # lower case
+ if (lowercase)
+  x = tolower(x)
+ # remove numbers
+ if (numbers)
+  x = removeNumbers(x)
+ # remove punctuation symbols
+ if (punctuation)
+  x = gsub("[[:punct:]]", " ", x)
+ # remove extra white spaces
+ if (spaces) {
+  x = stripWhitespace(x)
+ if (whitespace) {
+   x = trimws(x)
+ }
+ }
+ # return
+ x
+}
+
+#Clean text
+management_discussion_all$mgmt_discuss <- clean.text(management_discussion_all$mgmt_discuss)
+```
+
+```{r warning=FALSE, message=FALSE}
+#Modify date format in management discussions dataframe
+management_discussion_all$filing_date <- lubridate::ymd(management_discussion_all$filing_date)
+
+#Combine with company information
+management_discussion_all <- management_discussion_all %>%
+  left_join(company_filing, by = c("cik" = "cik", "filing_date" = "date.filed"))
+
+#Lower company name and symbols
+management_discussion_all$company_name <- tolower(management_discussion_all$company_name)
+management_discussion_all$symbol <- tolower(management_discussion_all$symbol)
+
+#Create variable for change in price
+management_discussion_all <- management_discussion_all %>%
+  mutate(price_change = (log(after_close_price) - log(before_close_price))/log(before_close_price))
+
+#Change year to factor from numeric
+management_discussion_all$year <- as.factor(management_discussion_all$year)
+```
