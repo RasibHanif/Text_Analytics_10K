@@ -1,0 +1,169 @@
+## Reading Data from EDGAR
+
+```{r master_index, eval=FALSE}
+#Get data from edgar from 2010 to 2020
+edgar::getMasterIndex(2010:2020)
+```
+
+```{r eval=FALSE}
+#Reading master index to a dataframe
+master_indexes <- list.files("Master Indexes/",pattern="Rda")
+all_indexes <- data.frame()
+for(master_index in master_indexes){
+load(paste0("Master Indexes/",master_index))
+this_index <- year.master
+all_indexes <- bind_rows(all_indexes,this_index)
+print(master_index)
+}
+
+saveRDS(all_indexes, "all_indexes.RDS")
+```
+```{r warning=FALSE, message=FALSE}
+all_indexes <- readRDS("all_indexes.RDS")
+```
+
+```{r warning=FALSE, message=FALSE}
+#Filter select companies and 10-K
+company_filing <- all_indexes %>% filter(form.type %in% c("10-K")) %>% filter(cik %in% select_cik)
+```
+
+```{r warning=FALSE, message=FALSE}
+#Joining data to main dataframe
+company_filing <- company_filing %>%
+  inner_join(selected_company)
+
+company_filing <- unique(company_filing)
+
+#Removing duplicate columns
+company_filing$gics_sector <- NULL
+company_filing$security <- NULL
+
+#Modify date columns
+company_filing$date.filed <- lubridate::ymd(company_filing$date.filed)
+
+#Extracting year of filing
+company_filing$year <- lubridate::year(company_filing$date.filed)
+
+```
+
+```{r warning=FALSE, message=FALSE}
+#Visualise the number of filings for each company
+company_filing %>%
+  group_by(cik) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  ggplot(aes(count, reorder(cik, count))) + geom_col(fill = "lightblue", color = "black")
+
+#Checking duplicate
+company_filing %>% 
+  group_by(cik, year) %>% 
+  summarise(total = n()) %>% 
+  arrange(desc(total))
+
+#There is unique CIK per year which identifies uniqueness 
+```
+
+## Share Price
+
+For price of stock I have selected 7 days before filing because near filing people start to talk and prices show effect accordingly. For after filing price I took 3 days as it takes few days for report to be read and show effect.
+
+```{r eval=FALSE}
+#Create dataframe of price
+stock_price <- data.frame()
+
+#extract close price before the filing
+for(i in 1:nrow(company_filing)){
+individual_price <- tq_get(company_filing$symbol[i],
+                           get = "stock.prices",
+                           from = company_filing$date.filed[i]-7,
+                           to=company_filing$date.filed[i]) %>% 
+                           slice(1) %>%
+                           select(c(symbol,close))
+
+individual_price$date.filed <- company_filing$date.filed[i]
+
+stock_price <- bind_rows(stock_price, individual_price)
+}
+
+#Clean column names
+colnames(stock_price) <- c("symbol", "before_close_price", "date.filed")
+
+#Join with dataframe
+company_filing <- company_filing %>%
+  left_join(stock_price, by = c("symbol" = "symbol", "date.filed" = "date.filed"))
+
+#Create dataframe
+stock_price_after <- data.frame()
+
+#Extract close price of stock after
+for(i in 1:nrow(company_filing)){
+individual_price <- tq_get(company_filing$symbol[i],
+                           get = "stock.prices",
+                           from = company_filing$date.filed[i],
+                           to=company_filing$date.filed[i]+3) %>% arrange(desc(date)) %>% 
+                           slice(1) %>%
+                           select(c(symbol,close))
+  
+
+individual_price$date.filed <- company_filing$date.filed[i]
+
+stock_price_after <- bind_rows(stock_price_after, individual_price)
+}
+
+#Clean column names
+colnames(stock_price_after) <- c("symbol", "after_close_price", "date.filed")
+
+#Join with main dataframe
+company_filing <- company_filing %>%
+  left_join(stock_price_after, by = c("symbol" = "symbol", "date.filed" = "date.filed"))
+
+company_filing$before_close_price.x <- NULL
+# company_filing <- company_filing%>%
+#   rename(before_close_price = before_close_price.y)
+
+#Save file
+saveRDS(company_filing, "company_filing_stock.RDS")
+
+```
+
+
+```{r eval=FALSE}
+#Get management discussions
+for(i in 1:nrow(company_filing)){
+ print(i)
+tryCatch(
+  edgar::getMgmtDisc(company_filing$cik[i],company_filing$year[i]), error=function(e){
+     cat("Error parsing")})
+}
+```
+
+## Downloading Management Discussion
+
+```{r warning=FALSE, message=FALSE}
+#Bring all the managment discussion to a dataframe
+
+#Create main data frame
+management_discussion_all <- data.frame()
+
+#Creating a loop for reading each MS&A file
+#Breaking into parts
+for (file in list.files("MD&A section text/")){
+#Reading each file
+    discussion <- readLines(paste0("MD&A section text/",file))
+
+#Creating parts from each file to make them column
+    mgmt_discuss <- gsub("item","",discussion[8], ignore.case = TRUE)
+#Extract CIK, company name, form type, filing date and accession number
+    cik <- gsub("CIK: ","",discussion[1])
+    company_name <- gsub("Company Name: ","" ,discussion[2])
+    form_type <- gsub("Form Type : ","" ,discussion[3])
+    filing_date <- gsub("Filing Date: " ,"" ,discussion[4])
+    accession_no <-  gsub("Accession Number: ","",discussion[5])
+    
+#Put it in a dataframe with each part in each column
+    management_discussion<-data.frame(cik=cik, company_name=company_name, form_type=form_type, filing_date=filing_date, accession_no=accession_no, mgmt_discuss=mgmt_discuss)
+    
+#Combine each file with main dataframe
+    management_discussion_all<- bind_rows(management_discussion_all, management_discussion)
+}
+```
