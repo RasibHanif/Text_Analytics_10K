@@ -1,0 +1,591 @@
+## Dataframe and Stop-Words Removal
+```{r results=FALSE, warning=FALSE, message=FALSE}
+#Creating custom stop words with only company name, symbol, industry name and words which are most common in across filings
+custom_stop_words_1 <- custom_stop_words %>% anti_join(top_company_words)
+
+#Remove stop words and other words which will make issue in analysis
+tokenize <- token %>%
+    anti_join(stop_words) %>%
+    anti_join(custom_stop_words_1) %>%
+    mutate(length = nchar(word)) %>%
+    filter(length > 3)
+```
+
+## Extracting Words through UDPIPE
+
+```{r eval=FALSE}
+#Download and load English model
+langmodel_download <- udpipe::udpipe_download_model("english")
+langmodel <- udpipe::udpipe_load_model("english-ewt-ud-2.5-191206.udpipe")
+
+#Clean management discussion from any symbol
+management_discussion_all$mgmt_discuss <- iconv(management_discussion_all$mgmt_discuss)
+
+#POS tagging through udpipe
+piped_data <- udpipe::udpipe_annotate(langmodel,
+tokenize$word,
+parser = "none",
+parallel.cores = 8,
+trace = 1000)
+
+#Change to dataframe
+piped_data <- as.data.frame(piped_data)
+
+#Save file for faster performance
+saveRDS(piped_data, "piped_data_token.RDS")
+```
+
+```{r results=FALSE, warning=FALSE, message=FALSE}
+tagged_data <- readRDS("piped_data_token.RDS")
+
+tagged_data <- tagged_data %>% filter(upos %in% c("NOUN", "ADJ", "ADV")) %>% pull(doc_id) 
+```
+
+### Creating Document Matrix
+
+```{r warning=FALSE, message=FALSE}
+tokenize_filtered <- tokenize %>% 
+  mutate(doc_id = paste0("doc", row_number())) %>% 
+  filter(doc_id %in% tagged_data)
+
+#Untokenize the data for topic modelling
+tokenize_filtered <- tokenize_filtered %>% 
+  group_by(cik, accession_no, year, gics_sub_industry, price_change) %>%
+  summarise(cleaned_discussion = paste(word, collapse = " ")) %>%
+  ungroup()
+
+processed <- textProcessor(tokenize_filtered$cleaned_discussion,
+                   metadata = tokenize_filtered,
+                   customstopwords=c("december","equipment","annual","information","statement","revenue","profit","loss","increase",  "decrease", "end", "air", "business", "common", "result", "approximately", "average", "fiscal", "june", "management", "discussion", "million", "sale", "net", "shares", "cash", "stock","income","earnings","liabilities","finance","expense","cost", "sale", "tax", "total","debt","amount","company","statement","rate","relate","share","note","change","report","consolidate","revenue","revenues","marker","service","liability","operation","information","capital","product","period","utilities","information","technology","financials","assets","period","operations","related","prior","statements","gross","industry","based","primarily","results","expenses","costs", "profit", "ebitda", "support", "january", "billion", "flow", "dollar", "balance", "sheet", "table", "december", "september", "compensation", "asset", "loan", "card", "label", "overhead", "thousand", "actual", "description", "percent", "reward", "credit", "client", "class", "base", "customer", "consumer", "estimate", "market", "operate", "financial", "account"), 
+                   stem = F)
+
+#Checking for word threshold
+plotRemoved(processed$documents, lower.thresh = seq(1, 200, by = 100))
+
+#Create document
+out <- prepDocuments(processed$documents,
+             processed$vocab,
+             processed$meta,lower.thresh = 25)
+```
+
+We can see that on 25 words frequency we will remove 1800 words from the document. This is important to give high frequency words to the model.
+
+### Extracting Optimal KAPPA
+
+```{r eval=FALSE}
+#Unsupervised model with Kappa = 0
+#This is not statistically proven method
+#But this method gives you starting point
+discussion_0 <- stm(documents = out$documents,
+              vocab = out$vocab,
+              K = 0,
+              prevalence =~ year + gics_sub_industry,
+              max.em.its = 75,
+              data = out$meta,
+              reportevery=3,
+              #gamma.prior = "L1",
+              sigma.prior = 0.7,
+              seed = 123,
+              init.type = "Spectral")
+plot.STM(discussion_0)
+#51 topics
+
+#searching for optimal k 
+numtopics <- searchK(out$documents, out$vocab, K = seq(from=5, to=51,by=2), prevalence =~ year + gics_sub_industry,  data = out$meta)
+
+saveRDS(numtopics, "numtopics.RDS")
+```
+
+```{r warning=FALSE, message=FALSE}
+numtopics<- readRDS("numtopics.RDS")
+
+#Checking Semantic and Exclusivity
+sem_excl <- data.frame(numtopics[[1]])
+
+#Extracting for selected models
+sem_excl <- filter(sem_excl, K %in% c(11, 23, 33))
+
+#view them
+print(sem_excl)
+
+#Visualise the results
+plot(numtopics)
+
+#As exclusivity is not visualised so we create a visual
+numtopics_output <- numtopics["results"]$results
+
+numtopics_output$K <- unlist(numtopics_output$K)
+numtopics_output$exclus <- unlist(numtopics_output$exclus)
+numtopics_output$semcoh <- unlist(numtopics_output$semcoh)
+numtopics_output$heldout <- unlist(numtopics_output$heldout)
+numtopics_output$residual <- unlist(numtopics_output$residual)
+
+exclus <- ggplot(numtopics_output, aes(K, exclus)) + geom_line(color="darkblue")
+semcoh <- ggplot(numtopics_output, aes(K, semcoh)) + geom_line(color="darkblue")
+heldout <- ggplot(numtopics_output, aes(K, heldout)) + geom_line(color="darkblue")
+residual <- ggplot(numtopics_output, aes(K, residual)) + geom_line(color="darkblue")
+
+gridExtra::grid.arrange(exclus, semcoh, heldout, residual)
+```
+As we can see that, we can select kappa as 11, 23 and 33 and test them further. The graphs indicated high exclusivity, peak of semantic coherence (motive to optimize) and low residual value.
+
+### Comparing KAPPA
+
+```{r eval=FALSE}
+#Checking selected KAPPA
+numtopics_2 <- searchK(out$documents, out$vocab, K = c(11,23,33), prevalence =~ year + gics_sub_industry, data = out$meta)
+
+numtopics_2 <- data.frame(unlist(numtopics_2$results))
+
+saveRDS(numtopics_2, "numtopics_2.RDS")
+```
+
+
+```{r eval=FALSE}
+#Create supervised models with selected KAPPA
+
+model_test_1 <- stm(documents = out$documents,
+              vocab = out$vocab,
+              K = 11,
+              prevalence =~ year + gics_sub_industry,
+              max.em.its = 75,
+              data = out$meta,
+              reportevery=3,
+              #gamma.prior = "L1",
+              sigma.prior = 0.7,
+              seed = 123,
+              init.type = "Spectral")
+
+
+model_test_2 <- stm(documents = out$documents,
+              vocab = out$vocab,
+              K = 23,
+              prevalence =~ year + gics_sub_industry,
+              max.em.its = 75,
+              data = out$meta,
+              reportevery=3,
+              #gamma.prior = "L1",
+              #sigma.prior = 0.7,
+              seed = 123,
+              init.type = "Spectral")
+
+model_test_3 <- stm(documents = out$documents,
+              vocab = out$vocab,
+              K =33,
+              prevalence =~ year + gics_sub_industry,
+              max.em.its = 75,
+              data = out$meta,
+              reportevery=3,
+              #gamma.prior = "L1",
+              #sigma.prior = 0.7,
+              seed = 123,
+              init.type = "Spectral")
+
+#Save tests
+saveRDS(model_test_1, "model_test_1.RDS")
+saveRDS(model_test_2, "model_test_2.RDS")
+saveRDS(model_test_3, "model_test_3.RDS")
+```
+
+```{r warning=FALSE, message=FALSE}
+#Read tests
+model_test_1 <- readRDS("model_test_1.RDS")
+model_test_2 <- readRDS("model_test_2.RDS")
+model_test_3 <- readRDS("model_test_3.RDS")
+```
+
+```{r eval=FALSE}
+# Extract beta matrix in tidy format
+excl_sem_1 <- as.data.frame(cbind(c(1:11),exclusivity(model_test_1), semanticCoherence(model=model_test_1, documents = out$documents), "Mod11"))
+
+excl_sem_2 <- as.data.frame(cbind(c(1:23),exclusivity(model_test_2), semanticCoherence(model=model_test_2, documents = out$documents), "Mod23"))
+
+excl_sem_3<-as.data.frame(cbind(c(1:33),exclusivity(model_test_3), semanticCoherence(model=model_test_3, documents = out$documents), "Mod33"))
+
+#Join them together and remain columns
+models_excl_sem<-rbind(excl_sem_1,excl_sem_2, excl_sem_3)
+colnames(models_excl_sem)<-c("K","exclusivity", "semantic_coherence", "model")
+ 
+#Change variable type
+models_excl_sem$exclusivity<-as.numeric(as.character(models_excl_sem$exclusivity))
+models_excl_sem$semantic_coherence<-as.numeric(as.character(models_excl_sem$semantic_coherence))
+
+#Visualise for performance
+ggplot(models_excl_sem, aes(semantic_coherence, exclusivity, color = model))+geom_point(size = 2, alpha = 0.7) +
+  labs(x = "Semantic coherence",
+       y = "Exclusivity",
+       title = "Comparing exclusivity and semantic coherence")
+```
+
+### Analyzing Selected KAPPA
+
+```{r warning=FALSE, message=FALSE}
+
+#Plot the model results
+plot(model_test_1, type = "summary", text.cex = 0.8, xlim = c(0, 0.3))
+```
+
+```{r warning=FALSE, message=FALSE}
+#extract the theta matrix
+convergence_theta <- as.data.frame(model_test_1$theta)
+colnames(convergence_theta)<-paste0("topic_", 1:11)
+
+#assigning topic summary, proportions and labels to variables
+topic_summary <- summary(model_test_2)
+topic_proportions <- colMeans(model_test_1$theta)
+topic_labels <- paste0("topic_",1:11)
+
+#wordcloud for topics
+stm::cloud(model_test_1, main = "Word Cloud of Model - 11 Topics", color = "lightblue")
+
+
+stm::cloud(model_test_1, topic = 8, main = "Word Cloud of Model - Topic 8", max = 30, color = "lightblue")
+stm::cloud(model_test_1, topic = 5, main = "Word Cloud of Model - Topic 5", max = 30, color = "lightblue")
+stm::cloud(model_test_1, topic = 11, main = "Word Cloud of Model - Topic 11", max = 30, color = "lightblue")
+```
+
+
+```{r warning=FALSE, message=FALSE}
+#Tidy the model
+td_beta <- tidy(model_test_1)
+
+#Find top 10 words in wach topic
+top_terms <- 
+  td_beta %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  ungroup() %>%
+  arrange(topic, desc(beta))
+
+#Visualise the top 10 words
+top_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered() +labs(title = "Top 10 Words for each Topic")
+```
+
+```{r warning=FALSE, message=FALSE}
+#Extracting gamma value
+td_gamma <- tidy(model_test_1, matrix = "gamma",
+                 document_names = rownames(out$documents))
+
+#Extracting gamma value of the model
+gamma_terms <- td_gamma %>%
+  group_by(topic) %>%
+  summarise(gamma = mean(gamma)) %>%
+  arrange(desc(gamma)) %>%
+  left_join(top_terms, by = "topic") %>%
+  mutate(topic = paste0("Topic ", topic),
+         topic = reorder(topic, gamma))
+
+# Tidying it up
+gamma_topics <- td_gamma %>%
+pivot_wider(names_from = topic, values_from = gamma)
+
+# Adding column name
+colnames(gamma_topics) <- c("document",topic_labels)
+
+#remove the document from the column
+gamma_topics <- as.data.frame(gamma_topics)
+rownames(gamma_topics) <- gamma_topics$document
+gamma_topics$document <- NULL
+
+#Performing PCA
+pcav <- FactoMineR::PCA(gamma_topics, graph = TRUE)
+
+factoextra::fviz_screeplot(pcav, addlabels = TRUE) + theme_classic()
+```
+
+We can see from PCA that topics cover ~25% variance of data.
+
+```{r warning=FALSE, message=FALSE}
+#Trying to improve the model
+#The number of topics were reduced
+model_test_4 <- stm(documents = out$documents,
+              vocab = out$vocab,
+              K =10,
+              prevalence =~ year + gics_sub_industry,
+              max.em.its = 75,
+              data = out$meta,
+              reportevery=3,
+              #gamma.prior = "L1",
+              sigma.prior = 0.7,
+              seed = 123,
+              init.type = "Spectral")
+```
+
+
+```{r warning=FALSE, message=FALSE}
+#Checked the beta and gamma values
+td_beta <- tidy(model_test_4)
+
+#Checking top 10 words
+top_terms <- 
+  td_beta %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  ungroup() %>%
+  arrange(topic, desc(beta))
+
+#Extracting gamma value
+td_gamma <- tidy(model_test_4, matrix = "gamma",
+                 document_names = rownames(out$documents))
+
+#Joining with beta value
+gamma_terms <- td_gamma %>%
+  group_by(topic) %>%
+  summarise(gamma = mean(gamma)) %>%
+  arrange(desc(gamma)) %>%
+  left_join(top_terms, by = "topic") %>%
+  mutate(topic = paste0("Topic ", topic),
+         topic = reorder(topic, gamma))
+
+# Tidying it up
+gamma_topics <- td_gamma %>%
+pivot_wider(names_from = topic, values_from = gamma)
+
+# Adding column name
+colnames(gamma_topics) <- c("document",topic_labels)
+
+#remove the document from the column
+gamma_topics <- as.data.frame(gamma_topics)
+rownames(gamma_topics) <- gamma_topics$document
+gamma_topics$document <- NULL
+
+#perform PCA
+pcav <- FactoMineR::PCA(gamma_topics, graph = TRUE)
+
+#Visualise Scree Plot
+factoextra::fviz_screeplot(pcav, addlabels = TRUE) + theme_classic()
+```
+The model with 11 topics has been selected due to depreciation in the model as it can be seen in *Scree Plot* where there is a sudden drop to zero.
+
+
+```{r results=FALSE, warning=FALSE, message=FALSE}
+#Optimize the selected model
+poliblogSelect <- selectModel(out$documents, out$vocab, K = 11,
+prevalence =~ year + gics_sub_industry, max.em.its = 75,
+data = out$meta, runs = 20, seed = 123)
+```
+```{r warning=FALSE, message=FALSE}
+#Visualise the models created
+plotModels(poliblogSelect, pch=c(1,2,3,4), legend.position="bottomright")
+
+#Selecting the best model
+selectedmodel <- poliblogSelect$runout[[3]]
+
+#Visualise the words in topics
+plot.STM(selectedmodel)
+
+#Details of words in model
+summary(selectedmodel)
+```
+    
+```{r}
+# Most frequent words in selected models 
+selectedmodel_summary <- summary(selectedmodel)
+selectedmodel_model <- length(selectedmodel_summary$topicnums)
+top_words <- c()
+
+
+for (i in 1:selectedmodel_model){
+  
+  top_words <- c(top_words, selectedmodel_summary$prob[i,])
+}
+data.frame(word=top_words) %>% group_by(word) %>% summarise(count=n()) %>%  arrange(desc(count)) %>% slice(1:15) %>% mutate( word= factor(word, word)) %>% ggplot(aes(x=reorder(word, count), y=count)) + geom_bar(stat="identity", fill= "lightblue", color= "black")+ coord_flip() + labs(title = "Top Words in Topics", x = "Frequency", "Word")
+
+
+topic_proportion <- colMeans(selectedmodel$theta)
+
+
+frex <- data.frame()
+for (i in 1:length(selectedmodel_summary$topicnums)){
+  entry <- tibble(topicnum= selectedmodel_summary$topicnums[i],
+  proportion= 100*round(topic_proportion[i],4),
+  frex_words= paste(selectedmodel_summary$frex[i, 1:7], collapse=","))
+  frex = rbind(entry,frex)
+}
+
+
+frex %>% arrange(desc(proportion))
+```
+
+## STM Effect Estimation
+
+```{r warning=FALSE, message=FALSE}
+#Calculate estimate effect for price change
+effects <- estimateEffect(~ as.numeric(price_change), 
+                          stmobj = selectedmodel,
+                          metadata = out$meta)
+
+#Review details
+summary(effects)
+
+topic_labels <- c("Exchange","Requirements", "Directions","Potential_Risks", "Obligations", "Legal", "Inventory", "Investors", "Offers","Investment","Administration") 
+
+# Effect of price change on topic
+# probability
+plot(effects, covariate = "price_change",
+     topics = c(1:11),
+     model = selectedmodel, 
+     method = "difference", 
+     cov.value1 = "100", 
+     cov.value2 = "0",
+     xlab = "Price Decrease ... Price Increase",
+     #xlim = c(-0.6,0.6),
+     main = "Marginal change on topic probabilities",
+     custom.labels = topic_labels,
+     labeltype = "custom")
+
+#Calculate estimate effect for Sub industry
+effects <- estimateEffect(~ gics_sub_industry, 
+                          stmobj = selectedmodel,
+                          metadata = out$meta)
+
+#Review Details
+summary(effects)
+
+# Effect of review score on topic
+# probability
+plot(effects, covariate = "gics_sub_industry",
+     topics = c(1),
+     model = selectedmodel, 
+     method = "pointestimate", 
+     main = "Marginal change on topic probabilities - Topic 1",
+     custom.labels = topic_labels,
+     labeltype = "custom")
+
+plot(effects, covariate = "gics_sub_industry",
+     topics = c(2),
+     model = selectedmodel, 
+     method = "pointestimate",
+     main = "Marginal change on topic probabilities - Topic 2",
+     custom.labels = topic_labels,
+     labeltype = "custom")
+
+plot(effects, covariate = "gics_sub_industry",
+     topics = c(9),
+     model = selectedmodel, 
+     method = "pointestimate", 
+     main = "Marginal change on topic probabilities - Topic 9",
+     custom.labels = topic_labels,
+     labeltype = "custom")
+
+#Calculate estimate effect for Sub industry
+effects <- estimateEffect(~ year, 
+                          stmobj = selectedmodel,
+                          metadata = out$meta)
+
+summary(effects)
+
+plot(effects, covariate = "year",
+     topics = c(1),
+     model = selectedmodel, 
+     method = "pointestimate", 
+     main = "Marginal change on topic probabilities - Topic 1",
+     custom.labels = topic_labels,
+     labeltype = "custom")
+```
+
+```{r warning=FALSE, message=FALSE, fig.height=6, fig.width=6}
+#Plot the model
+plot(selectedmodel,custom.labels = topic_labels, main = "Topics Importance Wise")
+
+#Check quality of each topic
+topicQuality(selectedmodel,documents=out$documents, main = "Quality of Topics")
+
+#Check correlation between topics
+topic_cor <- topicCorr(selectedmodel,method = "simple")
+plot.topicCorr(topic_cor,vlabels = paste0(c(1:20),": ",topic_labels),vertex.color = "white",
+vertex.label.dist=2,layout=igraph::layout.kamada.kawai,vertex.label.cex = 1.2 , main = "Correlation Between Topics"
+) 
+```
+
+We have named the topics based on the words, other graph presents how topics have semantic coherence and exclusivity and the other shows how each topic is related. We can see that risk is connected with investment, foreign exchange and legal obligations. Investors are concerned with material and administrative function in the industry.
+
+```{r results=FALSE, warning=FALSE, message=FALSE}
+#Extracting theta value from the model
+selectedmodel_theta <- data.frame(model_test_1$theta)
+
+#Name the topics
+colnames(selectedmodel_theta) <- c("Exchange","Requirements", "Directions","Potential_Risks", "Obligations", "Legal", "Inventory", "Investors", "Offers","Investment","Administration") 
+
+#Joing with main dataframe
+topic_price <- tokenize_filtered %>% select(price_change) %>%
+  cbind(selectedmodel_theta)
+```
+
+### Regression 1
+
+```{r warning=FALSE, message=FALSE}
+#Create regression model
+lm_test <- lm(price_change ~ ., data = topic_price)
+
+#Review details
+summary(lm_test)
+```
+
+```{r eval=FALSE}
+#Check stepAIC
+MASS::stepAIC(lm_test)
+```
+
+### Regression 2
+
+```{r warning=FALSE, message=FALSE}
+topic_price_gics <- tokenize_filtered %>% select(price_change, gics_sub_industry) %>%
+  cbind(selectedmodel_theta)
+#Create regression model
+lm_test_1 <- lm(price_change ~ ., data = topic_price_gics)
+
+#Review details
+summary(lm_test_1)
+```
+
+```{r eval=FALSE}
+#Check stepAIC
+MASS::stepAIC(lm_test_1)
+```
+
+## LDA Modelling
+
+```{r results=FALSE, warning=FALSE, message=FALSE}
+#Creat document term matrix
+dtm <- tokenize %>%
+  count(accession_no,word) %>% cast_dtm(accession_no,word,n)
+
+#Inspect dtm
+tm::inspect(dtm)
+
+#remove sparse terms for the matrix
+dtm2 <- tm::removeSparseTerms(dtm,sparse = 0.75)
+
+#Inspect again
+tm::inspect(dtm2)
+#Sparse value is 47% which is acceptable
+
+#Create the model
+LDA_model <- LDA(dtm2, k = 11, method = "Gibbs",
+ control = list(seed = 123))
+```
+
+```{r warning=FALSE, messgae=FALSE}
+#Tidy up the model
+LDA_model_tidy <- tidy(LDA_model)
+
+#Visualise the top 5 words in each topic
+LDA_model_tidy %>%
+ group_by(topic) %>%
+ top_n(5, beta) %>%
+ ungroup() %>%
+ arrange(topic, -beta) %>%
+ mutate(topic = factor(topic),
+ term = reorder_within(term, beta, topic)) %>%
+ ggplot(aes(term, beta, fill = topic)) +
+ geom_bar(alpha = 0.8, stat = "identity", show.legend = FALSE) +
+ scale_x_reordered() +
+ facet_wrap(~ topic, scales = "free", ncol = 4) +
+ coord_flip()
+```
