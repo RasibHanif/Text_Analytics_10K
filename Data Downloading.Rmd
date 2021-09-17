@@ -1,3 +1,62 @@
+```{r extract_table_pdf, eval=FALSE}
+#Create a dataframe
+company <- data.frame()
+
+#Extract the tables from PDF file of assignment
+#Getting companies given in assignment
+for (i in 1:3){
+table <- as.data.frame(tabulizer::extract_tables("individual_assignment_description_ib9cw0_2021.pdf")[[i]])
+company <- bind_rows(company, table)}
+
+#Header is repeated so make it unique
+company <- unique(company)
+
+#There was issue in columns made separate columns
+#Combining columns where value was missing
+company$V6 <- ifelse(is.na(company$V6), company$V5, company$V6)
+
+#Remove extra column of CIK
+company$V5 <- NULL
+
+#Put value as CIK for heading
+company[1,5] <- "CIK"
+
+#Rename columns from row 1
+colnames(company) <- company[1,]
+
+#Remove the row with column name
+company <- company[2:nrow(company),]
+
+#Clean column names
+colnames(company) <- gsub(" ","_",tolower(colnames(company)))
+
+#Visualise the number of sub-categories
+company %>%
+  group_by(gics_sub_industry) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  ggplot(aes(count, reorder(gics_sub_industry, count))) + geom_col(fill = "lightblue", color = "black") +
+  labs(title = "Category Break Down", x = "Frequency", y = "Categories")
+
+#Select 30 companies for assignment
+#Selected industries are Application Software, Technology Hardware, Storage & Peripherals & Semiconductors
+#10 companies are selected from each sub-industry
+selected_company <- company %>% filter(gics_sub_industry %in% c("Application Software", "Data Processing & Outsourced Services", "Semiconductors"))
+
+#Save file
+saveRDS(selected_company, "selected_company.RDS")
+```
+```{r warning=FALSE, message=FALSE}
+#Read file
+selected_company <- readRDS("selected_company.RDS")
+
+#Read companies selected
+selected_company[,2]
+
+#Create variable for filtering data from edgar
+select_cik <- selected_company$cik
+```
+
 ## Reading Data from EDGAR
 
 ```{r master_index, eval=FALSE}
