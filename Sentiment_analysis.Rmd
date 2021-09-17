@@ -1,0 +1,262 @@
+## Dataframe and Sentiments Dictionaries
+
+```{r warning=FALSE, message=FALSE}
+#Create dataframe for sentiment analysis
+senti_data <- token %>%
+  select(cik, company_name, accession_no, symbol, gics_sub_industry, price_change, word)
+
+```
+
+```{r warning=FALSE, message=FALSE}
+#Loading all sentiment dictionaries
+nrc_dictionary <- tidytext::get_sentiments("nrc")
+bing_dictionary <- tidytext::get_sentiments("bing")
+afinn_dictionary <- tidytext::get_sentiments("afinn")
+lm_dictionary <- tidytext::get_sentiments("loughran")
+```
+
+### Extracting Sentiments
+
+#### NRC
+
+```{r nrc, warning=FALSE, message=FALSE}
+# Joining with main dataframe
+nrc_senti <- senti_data %>%
+  inner_join(nrc_dictionary)
+
+#Count number of words for each listing
+count_nrc <- nrc_senti %>%
+  group_by(accession_no)%>%
+summarise(count=n()) %>%
+  ungroup()
+
+#Visualise the data
+nrc_senti %>%
+  count(word, sentiment, sort = TRUE) %>%
+ group_by(sentiment) %>%
+ top_n(5) %>%
+ ungroup() %>%
+ mutate(word = reorder(word,n)) %>%
+ ggplot(aes(word, n, fill = sentiment)) +
+ geom_col(show.legend = FALSE) +
+facet_wrap(~sentiment, scales = "free_y") +
+ labs(y = "Contribution to sentiment",
+ x = NULL) +
+ coord_flip()
+
+#Grouping the data of sentiment
+discussion_nrc <- nrc_senti %>%
+  group_by(cik, gics_sub_industry, accession_no, price_change, sentiment)%>%
+summarise(count=n()) %>%
+  ungroup()
+
+#Pivoting data and creating new variables
+discussion_nrc <- discussion_nrc %>% 
+  pivot_wider(names_from=sentiment, values_from=count, values_fill = 0L) %>% 
+  left_join(count_nrc) %>%
+  mutate(nrc_polarity = (positive-negative)/(positive+negative), #polarity variable
+         nrc_anger = anger/count,
+         nrc_anticipation = anticipation/count,
+         nrc_disgust = disgust/count,
+         nrc_fear = fear/count,
+         nrc_joy = joy/count,
+         nrc_negative = negative/count,
+         nrc_positive = positive/count,
+         nrc_sadness = sadness/count,
+         nrc_surprise = surprise/count,
+         nrc_trust = trust/count) 
+
+#Remove count variable
+discussion_nrc$count <- NULL 
+```
+
+#### AFINN
+
+```{r afinn, warning=FALSE, message=FALSE}
+#Join with main dataframe
+afinn_senti <- senti_data %>%
+  inner_join(afinn_dictionary)
+
+#Group by the data
+discussion_afinn <- afinn_senti %>%
+  group_by(cik, gics_sub_industry, accession_no, price_change)%>%
+summarise(afinn_sentiment=sum(value))
+
+#Visualise the data
+afinn_senti %>%
+ count(word, value, sort = TRUE) %>%
+ reshape2::acast(word ~ value, value.var = "n", fill = 0) %>%
+ wordcloud::comparison.cloud(colors = c("gray20", "blue","red","green","yellow","lightblue", "darkgreen", "darkred", "orange")
+,max.words = 30)
+```
+
+#### BING
+
+```{r bing, warning=FALSE, message=FALSE}
+#Join with main dataframe
+bing_senti <- senti_data %>%
+  inner_join(bing_dictionary)
+
+#Count number of words for each listing
+count_bing <- bing_senti %>%
+  group_by(accession_no)%>%
+summarise(count=n()) %>%
+  ungroup()
+
+#Visualise the data
+bing_senti %>%
+  count(word, sentiment, sort = TRUE) %>%
+ group_by(sentiment) %>%
+ top_n(5) %>%
+ ungroup() %>%
+ mutate(word = reorder(word,n)) %>%
+ ggplot(aes(word, n, fill = sentiment)) +
+ geom_col(show.legend = FALSE) +
+facet_wrap(~sentiment, scales = "free_y") +
+ labs(y = "Contribution to sentiment",
+ x = NULL) +
+ coord_flip()
+
+#Group by data with the variables
+discussion_bing <- bing_senti %>%
+  group_by(cik, gics_sub_industry, accession_no, price_change, sentiment)%>%
+summarise(count=n()) %>%
+  ungroup()
+
+#Transforming data and creating new variables
+discussion_bing <- discussion_bing %>% 
+  pivot_wider(names_from=sentiment, values_from=count, values_fill = 0L) %>% 
+  left_join(count_bing) %>%
+  mutate(bing_polarity = (positive-negative)/(positive+negative),
+         bing_negative = negative/count,
+         bing_positive = positive/count)
+
+#Visualise the word cloud
+bing_senti %>%
+ count(word, sentiment, sort = TRUE) %>%
+ reshape2::acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+ wordcloud::comparison.cloud(colors = c("red","darkgreen"),max.words = 30)
+
+#Remove count variable
+discussion_bing$count = NULL
+```
+
+#### Loughran
+
+```{r loughran, warning=FALSE, message=FALSE}
+#Join with main dataframe
+lm_senti <- senti_data %>%
+  inner_join(lm_dictionary)
+
+#Count number of words for each listing
+count_lm <- lm_senti %>%
+  group_by(accession_no)%>%
+  summarise(count=n()) %>%
+  ungroup()
+
+#Visualise the data
+lm_senti %>%
+  count(word, sentiment, sort = TRUE) %>%
+ group_by(sentiment) %>%
+ top_n(5) %>%
+ ungroup() %>%
+ mutate(word = reorder(word,n)) %>%
+ ggplot(aes(word, n, fill = sentiment)) +
+ geom_col(show.legend = FALSE) +
+facet_wrap(~sentiment, scales = "free_y") +
+ labs(y = "Contribution to sentiment",
+ x = NULL) +
+ coord_flip()
+
+#Group by data with the variables
+discussion_lm <- lm_senti %>%
+  group_by(cik, gics_sub_industry, accession_no, price_change, sentiment)%>%
+summarise(count=n()) %>%
+  ungroup()
+
+#Transforming data and creating new variables
+discussion_lm <- discussion_lm %>% 
+  pivot_wider(names_from=sentiment, values_from=count, values_fill = 0L) %>% 
+  left_join(count_lm) %>%
+  mutate(lm_polarity = (positive-negative)/(positive+negative),
+         lm_constraining = constraining/count,
+         lm_litigious = litigious/count,
+         lm_negative = negative/count,
+         lm_positive = positive/count,
+         lm_uncertainty = uncertainty/count,
+         lm_superfluous = superfluous/count)
+
+#Visualise the word cloud
+lm_senti %>%
+ count(word, sentiment, sort = TRUE) %>%
+ reshape2::acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+ wordcloud::comparison.cloud(colors = c("gray20", "blue","red","green","yellow","lightblue"),max.words = 30)
+
+#Checking correlation
+to_corr2 <- discussion_lm %>% select(constraining:superfluous)
+
+#Visualise tabular form
+round(cor(na.omit(to_corr2)),2)
+
+#Remove count variable
+discussion_lm$count <- NULL
+```
+
+#### WORDNET
+
+```{r wordnet, warning=FALSE, message=FALSE}
+wordnet_senti <- senti_data %>%
+  inner_join(corpus::affect_wordnet, by= c("word" = "term"))
+
+#Count number of words for each listing
+count_wn <- wordnet_senti %>%
+  group_by(accession_no)%>%
+  summarise(count=n()) %>%
+  ungroup()
+
+#Visualise the data
+wordnet_senti %>%
+  count(word, emotion, sort = TRUE) %>%
+ group_by(emotion) %>%
+ top_n(5) %>%
+ ungroup() %>%
+ mutate(word = reorder(word,n)) %>%
+ ggplot(aes(word, n, fill = emotion)) +
+ geom_col(show.legend = FALSE) +
+facet_wrap(~emotion, scales = "free_y") +
+ labs(y = "Contribution to sentiment",
+ x = NULL) +
+ coord_flip()
+
+#Group by data with the variables
+discussion_wordnet <- wordnet_senti %>%
+  group_by(cik, gics_sub_industry, accession_no, price_change, emotion)%>%
+summarise(count=n()) %>%
+  ungroup()
+
+#Transforming data and creating new variables
+discussion_wordnet <- discussion_wordnet %>% 
+  pivot_wider(names_from=emotion, values_from=count, values_fill = 0L) %>% 
+  left_join(count_wn) %>%
+  mutate(wn_polarity = (Positive-Negative)/(Positive+Negative),
+         wn_Positive = Positive/count,
+         wn_Negative = Negative/count,
+         wn_Ambiguous = Ambiguous/count,
+         wn_Neutral = Neutral/count)
+
+#Visualise the word cloud
+wordnet_senti %>%
+ count(word, emotion, sort = TRUE) %>%
+ reshape2::acast(word ~ emotion, value.var = "n", fill = 0) %>%
+ wordcloud::comparison.cloud(colors = c("blue","red","green","lightblue"),max.words = 30)
+
+#Remove count variable
+discussion_wordnet$count <- NULL
+```
+
+```{r warning=FALSE, message=FALSE}
+#Checking change in price of stocks distribution
+ggplot(management_discussion_all, aes(price_change)) + geom_histogram(fill ="lightblue", color = "black") + labs(title = "Price Distribution", y= "Frequency", x ="Price Change")
+
+#The distribution is normally distributed no need for alteration
+```
